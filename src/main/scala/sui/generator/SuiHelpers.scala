@@ -4,21 +4,38 @@ import SuiLibrary._
 import java.io.File
 import java.io.PrintWriter
 
+import scala.util.Try
+
 trait SuiHelpers {
 
   def isEnumType(str: String) = str.contains("type ") && str.contains("=") && str.contains("'")
 
+  def isInt(in : String) = Try(in.toInt).isSuccess
+
   def generateScalaJSEnum(name: String, value: String): String = {
+
+    def getVariableName(in: String) =  {
+      if(in.contains("-")) in.replace("-","_")
+      else if(isInt(in)) s"_$in"
+      else in.split(" ").map(_.toUpperCase).mkString("_")
+    }
+
     s"""
        | @js.native
        | trait $name extends js.Object
        |
        | object $name {
        |
-       |  ${value.trim.replaceAll("'", "").split("\\|").map(_.trim).map(v => s""" val ${v.split(" ").map(_.toUpperCase).mkString("_")} = "$v".asInstanceOf[$name] """).mkString("\n")}
+       |  ${value.trim.replaceAll("'", "").split("\\|").map(_.trim).toSet[String].map(v => s""" val ${getVariableName(v)} = "$v".asInstanceOf[$name] """).mkString("\n")}
        |
        | }
      """.stripMargin
+  }
+
+  val scalaPredefineds = Set("type", "var", "object")
+
+  def getScalaName(name : String) = {
+    if(scalaPredefineds.contains(name)) s"`$name`" else name
   }
 
   def getSuperClassesProps(interfaceName: String, file: String): Seq[PropMeta] = {
@@ -30,7 +47,7 @@ trait SuiHelpers {
           val name = if (s.contains("<")) s.substring(0, s.indexOf("<")) else s
           val genericName = if (s.contains("<")) Some(s.substring(s.indexOf("<") + 1, s.indexOf(">"))) else None
           val isEvent = events.contains(name)
-          if(isEvent) propsCache.get(name).map(spm => spm.map(_.copy(tpe = eventElementMapper.get(genericName.getOrElse("")).getOrElse("")))).getOrElse(Seq())
+          if(isEvent) propsCache.get(name).map(spm => spm.map(pm => pm.copy(tpe = eventElementMapper.get(pm.tpe.replace("<T>",s"<${genericName.getOrElse("")}>")).getOrElse("")))).getOrElse(Seq())
           else propsCache.get(name).getOrElse(Seq())
         })
     } else Seq()
@@ -52,8 +69,8 @@ trait SuiHelpers {
         val name = pt.head.trim
         val isRequired = !name.contains("?")
         val fieldName = name.replace("?", "")
-        val tpe = pt.last.trim.replace(";", "")
-        val sjsTpe = if (componentName.nonEmpty) SuiTypeMapper(componentName, fieldName, tpe) else "PLACEHOLDER" // hack for event interfaces
+        val tpe = pt.last.trim.replace(";", "").replace(",","")
+        val sjsTpe = if (componentName.nonEmpty) SuiTypeMapper(componentName, fieldName, tpe) else tpe // hack for event interfaces
         PropMeta(fieldName, sjsTpe, isRequired)
       })
   }
@@ -66,6 +83,7 @@ trait SuiHelpers {
        |import japgolly.scalajs.react._
        |import scala.scalajs.js
        |import scala.scalajs.js.`|`
+       |import scala.scalajs.js.annotation.JSName
        |
        |/**
        | * This file is generated - submit issues instead of PR against it
@@ -79,13 +97,13 @@ trait SuiHelpers {
     val props = superclassProps ++ currentProps
     propsCache = propsCache.updated(interfaceName,props)
     val isChildren = props.find(_.name == "children").isDefined
-    val allProps = props.filterNot(_.name == "children") ++ keyRefProps
+    val allProps = (props.filterNot(_.name == "children") ++ keyRefProps).toSet
     val className = s"$prefix${cm.name}"
     s"""
        |$preInclude
        |
        |case class $className(
-       |     ${allProps.map(pm => s"${pm.name}: ${if (pm.isRequired) pm.tpe else s"js.UndefOr[${pm.tpe}] = js.undefined"}").mkString(",\n")}
+       |     ${allProps.map(pm => s"${getScalaName(pm.name)}: ${if (pm.isRequired) pm.tpe else s"js.UndefOr[${pm.tpe}] = js.undefined"}").mkString(",\n")}
        |){
        |  def apply(${if (isChildren) "children: ReactNode*" else ""}) = {
        |     val props = JSMacro[$className](this)
